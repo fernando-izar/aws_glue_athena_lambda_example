@@ -63,6 +63,23 @@ Resources:
                 Rules:
                   - Name: prefix
                     Value: raw_orders/
+                    
+  StartGlueJobFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "start-glue-job-${AWS::StackName}"
+      CodeUri: ../lambdas/start_glue_job
+      Handler: app.handler
+      Runtime: python3.11
+      MemorySize: 256
+      Timeout: 60
+      Events:
+        FromQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt QueueIngest.Arn
+            BatchSize: 1  # process one message per invocation (keeps it simple for now)
+
 
 Outputs:
   RawBucketOut:

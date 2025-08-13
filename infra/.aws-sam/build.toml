@@ -9,4 +9,13 @@ manifest_hash = ""
 packagetype = "Zip"
 functions = ["IngestFunction"]
 
+[function_build_definitions.ae627f75-09c4-4993-9584-b2d0e48db722]
+codeuri = "/Users/fci/Developer/aws/aws_glue_athena_lambda_example/lambdas/start_glue_job"
+runtime = "python3.11"
+architecture = "x86_64"
+handler = "app.handler"
+manifest_hash = ""
+packagetype = "Zip"
+functions = ["StartGlueJobFunction"]
+
 [layer_build_definitions]
