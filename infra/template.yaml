@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Step 1 - S3 (raw_orders) -> Lambda ingest -> SQS + SNS
+
+Parameters:
+  RawBucketName:
+    Type: String
+    Description: "Nome único do bucket RAW (ex.: fci-raw-orders-2025-08-13-fernando)"
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 60
+    MemorySize: 256
+
+Resources:
+  TopicIngest:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "etl-ingest-topic-${AWS::StackName}"
+
+  QueueIngest:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "etl-ingest-queue-${AWS::StackName}"
+      VisibilityTimeout: 120
+
+  RawBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref RawBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  IngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "ingest-handler-${AWS::StackName}"
+      CodeUri: ../lambdas/ingest_handler
+      Handler: app.handler
+      Environment:
+        Variables:
+          TOPIC_ARN: !Ref TopicIngest
+          QUEUE_URL: !Ref QueueIngest
+      Policies:
+        # Usa nomes/atributos dinâmicos
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt TopicIngest.TopicName
+        - SQSSendMessagePolicy:
+            QueueName: !Sub "etl-ingest-queue-${AWS::StackName}"
+        - S3ReadPolicy:
+            BucketName: !Ref RawBucketName
+      Events:
+        OnObjectCreated:
+          Type: S3
+          Properties:
+            Bucket: !Ref RawBucket
+            Events: s3:ObjectCreated:* 
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: raw_orders/
+
+Outputs:
+  RawBucketOut:
+    Value: !Ref RawBucket
+  TopicArnOut:
+    Value: !Ref TopicIngest
+  QueueUrlOut:
+    Value: !Ref QueueIngest
