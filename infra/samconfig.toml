@@ -1,0 +1,11 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "aws-etl-demo-01"
+resolve_s3 = true
+s3_prefix = "aws-etl-demo-01"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "RawBucketName=\"fci-raw-orders-2025-08-13-fcizar-306570484892\""
+image_repositories = []

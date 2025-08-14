@@ -1,0 +1,232 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: S3 (raw_orders) -> Lambda ingest -> SQS + SNS -> Glue Job -> Curated + DynamoDB
+
+Parameters:
+  RawBucketName:
+    Type: String
+    Description: "Nome único do bucket RAW (ex.: fci-raw-orders-2025-08-13-fernando)"
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 60
+    MemorySize: 256
+
+Resources:
+  TopicIngest:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "etl-ingest-topic-${AWS::StackName}"
+
+  QueueIngest:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "etl-ingest-queue-${AWS::StackName}"
+      VisibilityTimeout: 120
+
+  RawBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref RawBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  CuratedBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "fci-curated-${AWS::StackName}-${AWS::AccountId}-${AWS::Region}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  DailySalesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "daily_sales_${AWS::StackName}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: date
+          KeyType: HASH
+
+  IngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "ingest-handler-${AWS::StackName}"
+      CodeUri: ../lambdas/ingest_handler
+      Handler: app.handler
+      Environment:
+        Variables:
+          TOPIC_ARN: !Ref TopicIngest
+          QUEUE_URL: !Ref QueueIngest
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt TopicIngest.TopicName
+        - SQSSendMessagePolicy:
+            QueueName: !Sub "etl-ingest-queue-${AWS::StackName}"
+        - S3ReadPolicy:
+            BucketName: !Ref RawBucketName
+      Events:
+        OnObjectCreated:
+          Type: S3
+          Properties:
+            Bucket: !Ref RawBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: raw_orders/
+
+  StartGlueJobFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "start-glue-job-${AWS::StackName}"
+      CodeUri: ../lambdas/start_glue_job
+      Handler: app.handler
+      Runtime: python3.11
+      MemorySize: 256
+      Timeout: 60
+      Environment:
+        Variables:
+          JOB_NAME: !Ref GlueJob
+          CURATED_BUCKET: !Ref CuratedBucket
+          DDB_TABLE: !Ref DailySalesTable
+          GLUE_DATABASE: retail_db
+          SNS_TOPIC_ARN: !Ref TopicIngest
+      Policies:
+        - Statement:
+            Effect: Allow
+            Action: ["glue:StartJobRun"]
+            Resource: !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:job/${GlueJob}"
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt TopicIngest.TopicName
+      Events:
+        FromQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt QueueIngest.Arn
+            BatchSize: 1
+
+  GlueServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # RoleName: !Sub "AWSGlueServiceRole-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: glue.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: GlueJobAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ["s3:GetObject","s3:PutObject","s3:ListBucket"]
+                Resource:
+                  - !GetAtt RawBucket.Arn
+                  - !Sub "${RawBucket.Arn}/*"
+                  - !GetAtt CuratedBucket.Arn
+                  - !Sub "${CuratedBucket.Arn}/*"
+              - Effect: Allow
+                Action: ["dynamodb:PutItem","dynamodb:BatchWriteItem"]
+                Resource: !GetAtt DailySalesTable.Arn
+              - Effect: Allow
+                Action: ["sns:Publish"]
+                Resource: !Ref TopicIngest
+              - Effect: Allow
+                Action: ["glue:StartCrawler"]
+                Resource: !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:crawler/retail-curated-crawler-${AWS::StackName}"
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: retail_db
+
+  RawCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub "retail-raw-crawler-${AWS::StackName}"
+      Role: !GetAtt GlueServiceRole.Arn
+      DatabaseName: !Ref GlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Sub "s3://${RawBucketName}/raw_orders/"
+
+  CuratedCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub "retail-curated-crawler-${AWS::StackName}"
+      Role: !GetAtt GlueServiceRole.Arn
+      DatabaseName: !Ref GlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Sub "s3://${CuratedBucket}/curated/orders/"
+
+  GlueJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub "transform_orders-${AWS::StackName}"
+      Role: !GetAtt GlueServiceRole.Arn
+      GlueVersion: "4.0"
+      NumberOfWorkers: 2
+      WorkerType: G.1X
+      Command:
+        Name: glueetl
+        PythonVersion: "3"
+        ScriptLocation: !Sub "s3://${RawBucketName}/scripts/transform_orders.py"
+      DefaultArguments:
+        "--enable-glue-datacatalog": "true"
+
+  GetMetricsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "get-metrics-${AWS::StackName}"
+      CodeUri: ../lambdas/get_metrics
+      Handler: app.handler
+      Runtime: python3.11
+      MemorySize: 256
+      Timeout: 30
+      Environment:
+        Variables:
+          DDB_TABLE: !Ref DailySalesTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref DailySalesTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /metrics
+            Method: get
+
+
+
+Outputs:
+  RawBucketOut:
+    Value: !Ref RawBucket
+  CuratedBucketOut:
+    Value: !Ref CuratedBucket
+  TopicArnOut:
+    Value: !Ref TopicIngest
+  QueueUrlOut:
+    Value: !Ref QueueIngest
+  DailySalesTableOut:
+    Value: !Ref DailySalesTable
+  GlueJobNameOut:
+    Value: !Ref GlueJob
+  ApiUrl:
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/metrics"
+
