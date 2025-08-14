@@ -18,4 +18,13 @@ manifest_hash = ""
 packagetype = "Zip"
 functions = ["StartGlueJobFunction"]
 
+[function_build_definitions.c17642e7-90f8-4c54-852e-feb670bd8fd6]
+codeuri = "/Users/fci/Developer/aws/aws_glue_athena_lambda_example/lambdas/get_metrics"
+runtime = "python3.11"
+architecture = "x86_64"
+handler = "app.handler"
+manifest_hash = ""
+packagetype = "Zip"
+functions = ["GetMetricsFunction"]
+
 [layer_build_definitions]

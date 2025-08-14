@@ -190,6 +190,30 @@ Resources:
       DefaultArguments:
         "--enable-glue-datacatalog": "true"
 
+  GetMetricsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "get-metrics-${AWS::StackName}"
+      CodeUri: ../lambdas/get_metrics
+      Handler: app.handler
+      Runtime: python3.11
+      MemorySize: 256
+      Timeout: 30
+      Environment:
+        Variables:
+          DDB_TABLE: !Ref DailySalesTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref DailySalesTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /metrics
+            Method: get
+
+
+
 Outputs:
   RawBucketOut:
     Value: !Ref RawBucket
@@ -203,3 +227,6 @@ Outputs:
     Value: !Ref DailySalesTable
   GlueJobNameOut:
     Value: !Ref GlueJob
+  ApiUrl:
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/metrics"
+
